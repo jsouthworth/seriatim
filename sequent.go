@@ -211,6 +211,9 @@ func getMethods(receiver interface{}) map[string]interface{} {
 	out := make(map[string]interface{})
 	ty := reflect.TypeOf(receiver)
 	for i := 0; i < ty.NumMethod(); i++ {
+		if ty.Method(i).PkgPath != "" {
+			continue //skip private methods
+		}
 		method := ty.Method(i)
 		out[method.Name] = method.Func.Interface()
 	}
