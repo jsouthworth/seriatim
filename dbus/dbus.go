@@ -351,6 +351,7 @@ func (o *Object) getMethods(
 	value reflect.Value,
 	mapfn func(string) string,
 ) map[string]*Method {
+	errtype := reflect.TypeOf((*error)(nil)).Elem()
 	get_arguments := func(
 		num func() int,
 		get func(int) reflect.Type,
@@ -359,6 +360,11 @@ func (o *Object) getMethods(
 		var args []introspect.Arg
 		for j := 0; j < num(); j++ {
 			arg := get(j)
+			if typ == "out" && j == num()-1 {
+				if arg.Implements(errtype) {
+					continue
+				}
+			}
 			iarg := introspect.Arg{
 				"",
 				dbus.SignatureOfType(arg).String(),
