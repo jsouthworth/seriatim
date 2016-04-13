@@ -24,15 +24,15 @@ func (value *multiWriterValue) Update(fn func(*atomic.Value)) {
 	value.writelk.Unlock()
 }
 
-type Supervisor struct {
+type BusManager struct {
 	*Object
 }
 
-func NewSupervisor(
+func NewBusManager(
 	busfn func() (*dbus.Conn, error),
 	name string,
-) (*Supervisor, error) {
-	handler := &Supervisor{Object: NewObject("", nil, nil)}
+) (*BusManager, error) {
+	handler := &BusManager{Object: NewObject("", nil, nil)}
 	handler.objects.Store(make(map[string]*Object))
 	conn, err := busfn()
 	if err != nil {
@@ -58,32 +58,32 @@ func NewSupervisor(
 	return handler, nil
 }
 
-func NewSessionSupervisor(name string) (*Supervisor, error) {
-	return NewSupervisor(dbus.SessionBusPrivate, name)
+func NewSessionBusManager(name string) (*BusManager, error) {
+	return NewBusManager(dbus.SessionBusPrivate, name)
 }
 
-func NewSystemSupervisor(name string) (*Supervisor, error) {
-	return NewSupervisor(dbus.SystemBusPrivate, name)
+func NewSystemBusManager(name string) (*BusManager, error) {
+	return NewBusManager(dbus.SystemBusPrivate, name)
 }
 
-func (s *Supervisor) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {
+func (mgr *BusManager) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {
 	if string(path) == "/" {
-		return s, true
+		return mgr, true
 	}
 
 	ps := strings.Split(string(path), "/")
 	if ps[0] == "" {
 		ps = ps[1:]
 	}
-	return s.lookupObjectPath(ps)
+	return mgr.lookupObjectPath(ps)
 }
 
-func (s *Supervisor) Call(
+func (mgr *BusManager) Call(
 	path dbus.ObjectPath,
 	ifaceName, method string,
 	args ...interface{},
 ) ([]interface{}, error) {
-	object, ok := s.LookupObject(path)
+	object, ok := mgr.LookupObject(path)
 	if !ok {
 		return nil, dbus.ErrMsgNoObject
 	}
@@ -105,7 +105,7 @@ func (s *Supervisor) Call(
 	return ret, nil
 }
 
-func (s *Supervisor) DeliverSignal(iface, name string, signal *dbus.Signal) {
+func (mgr *BusManager) DeliverSignal(iface, name string, signal *dbus.Signal) {
 }
 
 type Method struct {
