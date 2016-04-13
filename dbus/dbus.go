@@ -141,7 +141,11 @@ func (mgr *BusManager) Call(
 	return ret, nil
 }
 
-func (mgr *BusManager) DeliverSignal(iface, name string, signal *dbus.Signal) {
+func (mgr *BusManager) DeliverSignal(iface, member string, signal *dbus.Signal) {
+	objects := mgr.objects.Load().(map[string]*Object)
+	for _, obj := range objects {
+		obj.DeliverSignal(iface, member, signal)
+	}
 }
 
 type Method struct {
@@ -215,11 +219,15 @@ func (method *Method) ReturnValue(position int) interface{} {
 }
 
 type Signal struct {
-	sequent       seriatim.Sequent
-	introspection introspect.Signal
-	sender        string
-	message       *dbus.Message
-	value         reflect.Value
+	name    string
+	sequent seriatim.Sequent
+}
+
+func (signal *Signal) Deliver(args ...interface{}) error {
+	if err := signal.sequent.Cast(signal.name, args...); err != nil {
+		return err
+	}
+	return nil
 }
 
 type Interface struct {
@@ -443,6 +451,29 @@ func (o *Object) getMethods(
 	return methods
 }
 
+func (o *Object) getSignals(
+	dbusIfaceName string,
+	iface reflect.Type,
+	mapfn func(string) string,
+) map[string]*Signal {
+	signals := make(map[string]*Signal)
+	for i := 0; i < iface.NumMethod(); i++ {
+		if iface.Method(i).PkgPath != "" {
+			continue // skip private methods
+		}
+
+		signal_name := iface.Method(i).Name
+		mapped_name := mapfn(signal_name)
+		signal := &Signal{
+			name:    signal_name,
+			sequent: o.sequent,
+		}
+		signals[mapped_name] = signal
+		o.bus.sequent.Call("AddMatchSignal", o.bus.conn, dbusIfaceName, mapped_name)
+	}
+	return signals
+}
+
 func (o *Object) Implements(name string, iface_ptr interface{}) error {
 	return o.ImplementsMap(name, iface_ptr,
 		func(in string) string {
@@ -480,7 +511,12 @@ func (o *Object) ImplementsMap(
 	return nil
 }
 
-func (o *Object) Receives(name string, iface_ptr interface{}) error {
+// Call for each D-Bus interface to receive signals from
+func (o *Object) Receives(
+	dbusIfaceName string,
+	iface_ptr interface{},
+	mapfn func(string) string,
+) error {
 	ptr_typ := reflect.TypeOf(iface_ptr)
 	if ptr_typ.Kind() != reflect.Ptr {
 		return errors.New("must be pointer to interface")
@@ -498,12 +534,32 @@ func (o *Object) Receives(name string, iface_ptr interface{}) error {
 	}
 
 	intf := &Interface{
-		methods: o.getMethods(iface, value, nil),
+		signals: o.getSignals(dbusIfaceName, iface, mapfn),
 		object:  o,
 	}
-
-	o.addListener(name, intf)
+	o.addListener(dbusIfaceName, intf)
 	return nil
+}
+
+// Deliver the signal to this object's listeners and all child objects
+func (o *Object) DeliverSignal(iface, member string, signal *dbus.Signal) {
+	listeners := o.listeners.Load().(map[string]*Interface)
+	for sigiface, intf := range listeners {
+		if iface != sigiface {
+			continue
+		}
+		for mapped_name, s := range intf.signals {
+			if member != mapped_name {
+				continue
+			}
+			s.Deliver(signal.Body...)
+		}
+	}
+
+	objects := o.objects.Load().(map[string]*Object)
+	for _, obj := range objects {
+		obj.DeliverSignal(iface, member, signal)
+	}
 }
 
 func (o *Object) Introspect() *introspect.Node {
@@ -524,14 +580,15 @@ func (o *Object) Introspect() *introspect.Node {
 		}
 		return out
 	}
-	getSignals := func(iface *Interface) []introspect.Signal {
-		signals := iface.signals
-		out := make([]introspect.Signal, 0, len(signals))
-		for _, signal := range signals {
-			out = append(out, signal.introspection)
-		}
-		return out
-	}
+	// TODO: When we support emitting signals, we will need this
+	// getSignals := func(iface *Interface) []introspect.Signal {
+	// 	signals := iface.signals
+	// 	out := make([]introspect.Signal, 0, len(signals))
+	// 	for _, signal := range signals {
+	// 		out = append(out, signal.introspection)
+	// 	}
+	// 	return out
+	// }
 	getInterfaces := func() []introspect.Interface {
 		if o.value.Kind() == reflect.Invalid {
 			return nil
@@ -542,7 +599,7 @@ func (o *Object) Introspect() *introspect.Node {
 			intro := introspect.Interface{
 				Name:    name,
 				Methods: getMethods(iface),
-				Signals: getSignals(iface),
+				// Signals: getSignals(iface),
 			}
 			out = append(out, intro)
 		}
