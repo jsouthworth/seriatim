@@ -13,6 +13,13 @@ import (
 	"sync/atomic"
 )
 
+const (
+	fdtDBusName       = "org.freedesktop.DBus"
+	fdtAddMatch       = fdtDBusName + ".AddMatch"
+	fdtRemoveMatch    = fdtDBusName + ".RemoveMatch"
+	fdtIntrospectable = fdtDBusName + ".Introspectable"
+)
+
 type multiWriterValue struct {
 	atomic.Value
 	writelk sync.Mutex
@@ -30,11 +37,37 @@ type BusManager struct {
 	conn *dbus.Conn
 }
 
+type mgrState struct {
+	sigref map[string]uint64
+}
+
+func (s *mgrState) AddMatchSignal(conn *dbus.Conn, iface, member string) {
+	// Only register for signal if not already registered
+	if s.sigref[iface+"."+member] == 0 {
+		conn.BusObject().Call(fdtAddMatch, 0,
+			"type='signal',interface='"+iface+"',member='"+member+"'")
+	}
+	s.sigref[iface+"."+member]++
+}
+
+func (s *mgrState) RemoveMatchSignal(conn *dbus.Conn, iface, member string) {
+	// Only deregister if this is the last request
+	if s.sigref[iface+":"+member] == 0 {
+		return
+	}
+	s.sigref[iface+":"+member]--
+	if s.sigref[iface+"."+member] == 0 {
+		conn.BusObject().Call(fdtRemoveMatch, 0,
+			"type='signal',interface='"+iface+"',member='"+member+"'")
+	}
+}
+
 func NewBusManager(
 	busfn func() (*dbus.Conn, error),
 	name string,
 ) (*BusManager, error) {
-	handler := &BusManager{Object: NewObject("", nil, nil, nil)}
+	state := &mgrState{sigref: make(map[string]uint64)}
+	handler := &BusManager{Object: NewObject("", state, nil, nil)}
 	handler.bus = handler
 	conn, err := busfn()
 	if err != nil {
@@ -234,8 +267,7 @@ func NewObject(name string, value interface{}, s seriatim.Supervisor, bus *BusMa
 	obj.listeners.Store(make(map[string]*Interface))
 	obj.objects.Store(make(map[string]*Object))
 	obj.emitterm.Store(make([]chan<- struct{}, 0))
-	obj.addInterface("org.freedesktop.DBus.Introspectable",
-		newIntrospection(obj))
+	obj.addInterface(fdtIntrospectable, newIntrospection(obj))
 	return obj
 }
 
