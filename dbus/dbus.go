@@ -24,16 +24,18 @@ func (value *multiWriterValue) Update(fn func(*atomic.Value)) {
 	value.writelk.Unlock()
 }
 
+// Acts as a root to the object tree
 type BusManager struct {
 	*Object
+	conn *dbus.Conn
 }
 
 func NewBusManager(
 	busfn func() (*dbus.Conn, error),
 	name string,
 ) (*BusManager, error) {
-	handler := &BusManager{Object: NewObject("", nil, nil)}
-	handler.objects.Store(make(map[string]*Object))
+	handler := &BusManager{Object: NewObject("", nil, nil, nil)}
+	handler.bus = handler
 	conn, err := busfn()
 	if err != nil {
 		return nil, err
@@ -55,6 +57,7 @@ func NewBusManager(
 		conn.Close()
 		return nil, err
 	}
+	handler.conn = conn
 	return handler, nil
 }
 
@@ -217,13 +220,15 @@ type Object struct {
 	listeners  multiWriterValue
 	emitterm   multiWriterValue
 	objects    multiWriterValue
+	bus        *BusManager
 }
 
-func NewObject(name string, value interface{}, s seriatim.Supervisor) *Object {
+func NewObject(name string, value interface{}, s seriatim.Supervisor, bus *BusManager) *Object {
 	obj := &Object{
 		name:    name,
 		value:   reflect.ValueOf(value),
 		sequent: seriatim.NewSupervisedSequent(value, s),
+		bus:     bus,
 	}
 	obj.interfaces.Store(make(map[string]*Interface))
 	obj.listeners.Store(make(map[string]*Interface))
@@ -260,14 +265,14 @@ func (o *Object) newObject(path []string, val interface{}) *Object {
 	name := path[0]
 	switch len(path) {
 	case 1:
-		obj := NewObject(name, val, o)
+		obj := NewObject(name, val, o, o.bus)
 		o.addObject(name, obj)
 		return obj
 	default:
 		obj, ok := o.LookupObject(name)
 		if !ok {
 			//placeholder object for introspection
-			obj = NewObject(name, nil, nil)
+			obj = NewObject(name, nil, nil, o.bus)
 			o.addObject(name, obj)
 		}
 		return obj.newObject(path[1:], val)
