@@ -144,7 +144,10 @@ func (method *Method) DecodeArguments(
 	if err := dbus.Store(body, decode...); err != nil {
 		return nil, dbus.ErrMsgInvalidArg
 	}
-
+	// Deref the pointers created by reflect.New above
+	for i, ptr := range pointers {
+		pointers[i] = reflect.ValueOf(ptr).Elem().Interface()
+	}
 	return pointers, nil
 }
 

@@ -248,8 +248,8 @@ func processMethodArguments(method reflect.Value, receiver interface{}, args ...
 	}
 	out := make([]reflect.Value, 0, method_type.NumIn())
 	out = append(out, reflect.ValueOf(receiver))
-	for i := 1; i < method_type.NumIn(); i++ {
-		param := method_type.In(i)
+	for i := 0; i < len(args); i++ {
+		param := method_type.In(i + 1)
 		arg := reflect.TypeOf(args[i])
 		if !arg.AssignableTo(param) {
 			return nil, fmt.Errorf(
@@ -259,7 +259,7 @@ func processMethodArguments(method reflect.Value, receiver interface{}, args ...
 				param,
 			)
 		}
-		out = append(out, reflect.ValueOf(arg))
+		out = append(out, reflect.ValueOf(args[i]))
 	}
 	return out, nil
 }
