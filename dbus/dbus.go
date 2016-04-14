@@ -13,6 +13,13 @@ import (
 	"sync/atomic"
 )
 
+const (
+	fdtDBusName       = "org.freedesktop.DBus"
+	fdtAddMatch       = fdtDBusName + ".AddMatch"
+	fdtRemoveMatch    = fdtDBusName + ".RemoveMatch"
+	fdtIntrospectable = fdtDBusName + ".Introspectable"
+)
+
 type multiWriterValue struct {
 	atomic.Value
 	writelk sync.Mutex
@@ -24,16 +31,44 @@ func (value *multiWriterValue) Update(fn func(*atomic.Value)) {
 	value.writelk.Unlock()
 }
 
-type Supervisor struct {
+// Acts as a root to the object tree
+type BusManager struct {
 	*Object
+	conn *dbus.Conn
 }
 
-func NewSupervisor(
+type mgrState struct {
+	sigref map[string]uint64
+}
+
+func (s *mgrState) AddMatchSignal(conn *dbus.Conn, iface, member string) {
+	// Only register for signal if not already registered
+	if s.sigref[iface+"."+member] == 0 {
+		conn.BusObject().Call(fdtAddMatch, 0,
+			"type='signal',interface='"+iface+"',member='"+member+"'")
+	}
+	s.sigref[iface+"."+member]++
+}
+
+func (s *mgrState) RemoveMatchSignal(conn *dbus.Conn, iface, member string) {
+	// Only deregister if this is the last request
+	if s.sigref[iface+":"+member] == 0 {
+		return
+	}
+	s.sigref[iface+":"+member]--
+	if s.sigref[iface+"."+member] == 0 {
+		conn.BusObject().Call(fdtRemoveMatch, 0,
+			"type='signal',interface='"+iface+"',member='"+member+"'")
+	}
+}
+
+func NewBusManager(
 	busfn func() (*dbus.Conn, error),
 	name string,
-) (*Supervisor, error) {
-	handler := &Supervisor{Object: NewObject("", nil, nil)}
-	handler.objects.Store(make(map[string]*Object))
+) (*BusManager, error) {
+	state := &mgrState{sigref: make(map[string]uint64)}
+	handler := &BusManager{Object: NewObject("", state, nil, nil)}
+	handler.bus = handler
 	conn, err := busfn()
 	if err != nil {
 		return nil, err
@@ -55,35 +90,36 @@ func NewSupervisor(
 		conn.Close()
 		return nil, err
 	}
+	handler.conn = conn
 	return handler, nil
 }
 
-func NewSessionSupervisor(name string) (*Supervisor, error) {
-	return NewSupervisor(dbus.SessionBusPrivate, name)
+func NewSessionBusManager(name string) (*BusManager, error) {
+	return NewBusManager(dbus.SessionBusPrivate, name)
 }
 
-func NewSystemSupervisor(name string) (*Supervisor, error) {
-	return NewSupervisor(dbus.SystemBusPrivate, name)
+func NewSystemBusManager(name string) (*BusManager, error) {
+	return NewBusManager(dbus.SystemBusPrivate, name)
 }
 
-func (s *Supervisor) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {
+func (mgr *BusManager) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {
 	if string(path) == "/" {
-		return s, true
+		return mgr, true
 	}
 
 	ps := strings.Split(string(path), "/")
 	if ps[0] == "" {
 		ps = ps[1:]
 	}
-	return s.lookupObjectPath(ps)
+	return mgr.lookupObjectPath(ps)
 }
 
-func (s *Supervisor) Call(
+func (mgr *BusManager) Call(
 	path dbus.ObjectPath,
 	ifaceName, method string,
 	args ...interface{},
 ) ([]interface{}, error) {
-	object, ok := s.LookupObject(path)
+	object, ok := mgr.LookupObject(path)
 	if !ok {
 		return nil, dbus.ErrMsgNoObject
 	}
@@ -105,7 +141,11 @@ func (s *Supervisor) Call(
 	return ret, nil
 }
 
-func (s *Supervisor) DeliverSignal(iface, name string, signal *dbus.Signal) {
+func (mgr *BusManager) DeliverSignal(iface, member string, signal *dbus.Signal) {
+	objects := mgr.objects.Load().(map[string]*Object)
+	for _, obj := range objects {
+		obj.DeliverSignal(iface, member, signal)
+	}
 }
 
 type Method struct {
@@ -182,11 +222,15 @@ func (method *Method) ReturnValue(position int) interface{} {
 }
 
 type Signal struct {
-	sequent       seriatim.Sequent
-	introspection introspect.Signal
-	sender        string
-	message       *dbus.Message
-	value         reflect.Value
+	name    string
+	sequent seriatim.Sequent
+}
+
+func (signal *Signal) Deliver(args ...interface{}) error {
+	if err := signal.sequent.Cast(signal.name, args...); err != nil {
+		return err
+	}
+	return nil
 }
 
 type Interface struct {
@@ -220,20 +264,21 @@ type Object struct {
 	listeners  multiWriterValue
 	emitterm   multiWriterValue
 	objects    multiWriterValue
+	bus        *BusManager
 }
 
-func NewObject(name string, value interface{}, s seriatim.Supervisor) *Object {
+func NewObject(name string, value interface{}, s seriatim.Supervisor, bus *BusManager) *Object {
 	obj := &Object{
 		name:    name,
 		value:   reflect.ValueOf(value),
 		sequent: seriatim.NewSupervisedSequent(value, s),
+		bus:     bus,
 	}
 	obj.interfaces.Store(make(map[string]*Interface))
 	obj.listeners.Store(make(map[string]*Interface))
 	obj.objects.Store(make(map[string]*Object))
 	obj.emitterm.Store(make([]chan<- struct{}, 0))
-	obj.addInterface("org.freedesktop.DBus.Introspectable",
-		newIntrospection(obj))
+	obj.addInterface(fdtIntrospectable, newIntrospection(obj))
 	return obj
 }
 
@@ -263,14 +308,14 @@ func (o *Object) newObject(path []string, val interface{}) *Object {
 	name := path[0]
 	switch len(path) {
 	case 1:
-		obj := NewObject(name, val, o)
+		obj := NewObject(name, val, o, o.bus)
 		o.addObject(name, obj)
 		return obj
 	default:
 		obj, ok := o.LookupObject(name)
 		if !ok {
 			//placeholder object for introspection
-			obj = NewObject(name, nil, nil)
+			obj = NewObject(name, nil, nil, o.bus)
 			o.addObject(name, obj)
 		}
 		return obj.newObject(path[1:], val)
@@ -409,6 +454,29 @@ func (o *Object) getMethods(
 	return methods
 }
 
+func (o *Object) getSignals(
+	dbusIfaceName string,
+	iface reflect.Type,
+	mapfn func(string) string,
+) map[string]*Signal {
+	signals := make(map[string]*Signal)
+	for i := 0; i < iface.NumMethod(); i++ {
+		if iface.Method(i).PkgPath != "" {
+			continue // skip private methods
+		}
+
+		signal_name := iface.Method(i).Name
+		mapped_name := mapfn(signal_name)
+		signal := &Signal{
+			name:    signal_name,
+			sequent: o.sequent,
+		}
+		signals[mapped_name] = signal
+		o.bus.sequent.Call("AddMatchSignal", o.bus.conn, dbusIfaceName, mapped_name)
+	}
+	return signals
+}
+
 func (o *Object) Implements(name string, iface_ptr interface{}) error {
 	return o.ImplementsMap(name, iface_ptr,
 		func(in string) string {
@@ -446,7 +514,12 @@ func (o *Object) ImplementsMap(
 	return nil
 }
 
-func (o *Object) Receives(name string, iface_ptr interface{}) error {
+// Call for each D-Bus interface to receive signals from
+func (o *Object) Receives(
+	dbusIfaceName string,
+	iface_ptr interface{},
+	mapfn func(string) string,
+) error {
 	ptr_typ := reflect.TypeOf(iface_ptr)
 	if ptr_typ.Kind() != reflect.Ptr {
 		return errors.New("must be pointer to interface")
@@ -464,12 +537,32 @@ func (o *Object) Receives(name string, iface_ptr interface{}) error {
 	}
 
 	intf := &Interface{
-		methods: o.getMethods(iface, value, nil),
+		signals: o.getSignals(dbusIfaceName, iface, mapfn),
 		object:  o,
 	}
-
-	o.addListener(name, intf)
+	o.addListener(dbusIfaceName, intf)
 	return nil
+}
+
+// Deliver the signal to this object's listeners and all child objects
+func (o *Object) DeliverSignal(iface, member string, signal *dbus.Signal) {
+	listeners := o.listeners.Load().(map[string]*Interface)
+	for sigiface, intf := range listeners {
+		if iface != sigiface {
+			continue
+		}
+		for mapped_name, s := range intf.signals {
+			if member != mapped_name {
+				continue
+			}
+			s.Deliver(signal.Body...)
+		}
+	}
+
+	objects := o.objects.Load().(map[string]*Object)
+	for _, obj := range objects {
+		obj.DeliverSignal(iface, member, signal)
+	}
 }
 
 func (o *Object) Introspect() *introspect.Node {
@@ -490,14 +583,15 @@ func (o *Object) Introspect() *introspect.Node {
 		}
 		return out
 	}
-	getSignals := func(iface *Interface) []introspect.Signal {
-		signals := iface.signals
-		out := make([]introspect.Signal, 0, len(signals))
-		for _, signal := range signals {
-			out = append(out, signal.introspection)
-		}
-		return out
-	}
+	// TODO: When we support emitting signals, we will need this
+	// getSignals := func(iface *Interface) []introspect.Signal {
+	// 	signals := iface.signals
+	// 	out := make([]introspect.Signal, 0, len(signals))
+	// 	for _, signal := range signals {
+	// 		out = append(out, signal.introspection)
+	// 	}
+	// 	return out
+	// }
 	getInterfaces := func() []introspect.Interface {
 		if o.value.Kind() == reflect.Invalid {
 			return nil
@@ -508,7 +602,7 @@ func (o *Object) Introspect() *introspect.Node {
 			intro := introspect.Interface{
 				Name:    name,
 				Methods: getMethods(iface),
-				Signals: getSignals(iface),
+				// Signals: getSignals(iface),
 			}
 			out = append(out, intro)
 		}

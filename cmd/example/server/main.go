@@ -59,7 +59,7 @@ func handle_error(err error) {
 }
 
 func main() {
-	supervisor, err := dbus.NewSessionSupervisor(
+	supervisor, err := dbus.NewSessionBusManager(
 		"com.github.jsouthworth.dbustest")
 	handle_error(err)
 
