@@ -21,7 +21,8 @@ const (
 )
 
 var (
-	errtype = reflect.TypeOf((*error)(nil)).Elem()
+	errtype    = reflect.TypeOf((*error)(nil)).Elem()
+	sendertype = reflect.TypeOf((*dbus.Sender)(nil)).Elem()
 )
 
 type multiWriterValue struct {
@@ -178,7 +179,11 @@ func (method *Method) DecodeArguments(
 		tp := reflect.TypeOf(method.ArgumentValue(i))
 		val := reflect.New(tp)
 		pointers[i] = val.Interface()
-		decode = append(decode, pointers[i])
+		if tp == sendertype {
+			val.Elem().SetString(sender)
+		} else {
+			decode = append(decode, pointers[i])
+		}
 	}
 
 	if len(decode) != len(body) {
@@ -418,6 +423,10 @@ func (o *Object) getMethods(
 				if arg.Implements(errtype) {
 					continue
 				}
+			}
+			if typ == "in" && arg == sendertype {
+				// Hide argument from introspection
+				continue
 			}
 			iarg := introspect.Arg{
 				"",
