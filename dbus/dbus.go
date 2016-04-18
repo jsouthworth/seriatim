@@ -20,6 +20,10 @@ const (
 	fdtIntrospectable = fdtDBusName + ".Introspectable"
 )
 
+var (
+	errtype = reflect.TypeOf((*error)(nil)).Elem()
+)
+
 type multiWriterValue struct {
 	atomic.Value
 	writelk sync.Mutex
@@ -197,10 +201,13 @@ func (method *Method) Call(args ...interface{}) ([]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ev, ok := ret[method_type.NumOut()-1].(error); ok {
-		if ev != nil {
-			return nil, ev
+	last := method_type.NumOut() - 1
+	if method_type.Out(last) == errtype {
+		// Last parameter is of type error
+		if ret[last] != nil {
+			return nil, ret[last].(error)
 		}
+		return ret[:last], nil
 	}
 	return ret, nil
 }
@@ -399,7 +406,6 @@ func (o *Object) getMethods(
 	value reflect.Value,
 	mapfn func(string) string,
 ) map[string]*Method {
-	errtype := reflect.TypeOf((*error)(nil)).Elem()
 	get_arguments := func(
 		num func() int,
 		get func(int) reflect.Type,
