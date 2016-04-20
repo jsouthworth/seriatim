@@ -121,29 +121,15 @@ func (mgr *BusManager) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bo
 
 func (mgr *BusManager) Call(
 	path dbus.ObjectPath,
-	ifaceName, method string,
+	ifaceName string,
+	method string,
 	args ...interface{},
 ) ([]interface{}, error) {
 	object, ok := mgr.LookupObject(path)
 	if !ok {
 		return nil, dbus.ErrMsgNoObject
 	}
-
-	iface, exists := object.LookupInterface(ifaceName)
-	if !exists {
-		return nil, dbus.ErrMsgUnknownInterface
-	}
-
-	m, exists := iface.LookupMethod(method)
-	if !exists {
-		return nil, dbus.ErrMsgUnknownMethod
-	}
-
-	ret, err := m.Call(args...)
-	if err != nil {
-		return nil, err
-	}
-	return ret, nil
+	return object.(*Object).Call(ifaceName, method, args...)
 }
 
 func (mgr *BusManager) DeliverSignal(iface, member string, signal *dbus.Signal) {
@@ -210,7 +196,7 @@ func (method *Method) Call(args ...interface{}) ([]interface{}, error) {
 	if method_type.Out(last) == errtype {
 		// Last parameter is of type error
 		if ret[last] != nil {
-			return nil, ret[last].(error)
+			return ret[:last], ret[last].(error)
 		}
 		return ret[:last], nil
 	}
@@ -578,6 +564,23 @@ func (o *Object) DeliverSignal(iface, member string, signal *dbus.Signal) {
 	for _, obj := range objects {
 		obj.DeliverSignal(iface, member, signal)
 	}
+}
+
+func (o *Object) Call(
+	ifaceName, method string,
+	args ...interface{},
+) ([]interface{}, error) {
+	iface, exists := o.LookupInterface(ifaceName)
+	if !exists {
+		return nil, dbus.ErrMsgUnknownInterface
+	}
+
+	m, exists := iface.LookupMethod(method)
+	if !exists {
+		return nil, dbus.ErrMsgUnknownMethod
+	}
+
+	return m.Call(args...)
 }
 
 func (o *Object) Introspect() *introspect.Node {
