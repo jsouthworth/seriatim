@@ -251,17 +251,20 @@ func processMethodArguments(method reflect.Value, receiver interface{}, args ...
 	out := make([]reflect.Value, 0, method_type.NumIn())
 	out = append(out, reflect.ValueOf(receiver))
 	for i := 0; i < len(args); i++ {
+		arg := reflect.ValueOf(args[i])
 		param := method_type.In(i + 1)
-		arg := reflect.TypeOf(args[i])
-		if !arg.AssignableTo(param) {
+		arg_type := reflect.TypeOf(args[i])
+		if arg_type.ConvertibleTo(param) {
+			arg = arg.Convert(param)
+		} else if !arg_type.AssignableTo(param) {
 			return nil, fmt.Errorf(
 				"Argument %d of type %s is not assignable type %s",
 				i,
-				arg,
+				arg_type,
 				param,
 			)
 		}
-		out = append(out, reflect.ValueOf(args[i]))
+		out = append(out, arg)
 	}
 	return out, nil
 }
