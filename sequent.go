@@ -24,6 +24,7 @@ type Sequent interface {
 	Call(name string, args ...interface{}) ([]interface{}, error)
 	Cast(name string, args ...interface{}) error
 	Running() bool
+	Terminate(error)
 }
 
 func NewSequent(val interface{}) Sequent {
@@ -149,6 +150,7 @@ func (a *sequent) init(methods map[string]interface{}) {
 	a.methods = convertMethods(a.val, methods)
 	a.queue = NewQueue(1)
 	a.running.Store(true)
+	a.kill = make(chan error)
 	go a.run()
 }
 
