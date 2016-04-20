@@ -331,6 +331,61 @@ func (o *Object) NewObject(path dbus.ObjectPath, val interface{}) *Object {
 	return o.newObject(ps, val)
 }
 
+func (o *Object) terminate() {
+	if o.sequent != nil {
+		o.sequent.Terminate(nil)
+	}
+}
+
+func (o *Object) rmChildObject(name string) {
+	o.objects.Update(func(value *atomic.Value) {
+		objects := make(map[string]*Object)
+		for child, obj := range o.getObjects() {
+			objects[child] = obj
+		}
+		if obj, ok := objects[name]; ok {
+			// if there are children replace with placeholder
+			if len(obj.getObjects()) > 0 {
+				object := NewObject(name, nil, nil, o.bus)
+				object.objects = obj.objects
+				objects[name] = object
+			} else {
+				delete(objects, name)
+			}
+			obj.terminate()
+		}
+		value.Store(objects)
+	})
+}
+
+func (o *Object) delObject(path []string) {
+	name := path[0]
+	switch len(path) {
+	case 1:
+		if _, ok := o.LookupObject(name); ok {
+			o.rmChildObject(name)
+		}
+	default:
+		if child, ok := o.LookupObject(name); ok {
+			child.delObject(path[1:])
+			if len(child.getObjects()) == 0 {
+				o.rmChildObject(child.name)
+			}
+		}
+	}
+}
+
+func (o *Object) DeleteObject(path dbus.ObjectPath) {
+	if string(path) == "/" {
+		return
+	}
+	ps := strings.Split(string(path), "/")
+	if ps[0] == "" {
+		ps = ps[1:]
+	}
+	o.delObject(ps)
+}
+
 func (o *Object) lookupObjectPath(path []string) (*Object, bool) {
 	switch len(path) {
 	case 1:
@@ -651,6 +706,9 @@ func (intro intro_fn) Running() bool {
 }
 func (intro intro_fn) Id() uintptr {
 	return reflect.ValueOf(intro).Pointer()
+}
+
+func (intro intro_fn) Terminate(err error) {
 }
 
 func newIntrospection(o *Object) *Interface {
