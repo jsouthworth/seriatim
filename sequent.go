@@ -22,6 +22,7 @@ type Supervisor interface {
 type Sequent interface {
 	Id() uintptr
 	Call(name string, args ...interface{}) ([]interface{}, error)
+	CallFunc(fn interface{}, args ...interface{}) ([]interface{}, error)
 	Cast(name string, args ...interface{}) error
 	Running() bool
 	Terminate(error)
@@ -87,7 +88,26 @@ func (a *sequent) newRequest(
 	if !ok {
 		return nil, ErrUnknownMethod
 	}
+	return a.newMethodRequest(replych, method, args...)
+}
 
+func (a *sequent) newFuncRequest(
+	replych chan reply,
+	fn interface{},
+	args ...interface{},
+) (*request, error) {
+	method, err := convertMethod(a.val, fn)
+	if err != nil {
+		return nil, err
+	}
+	return a.newMethodRequest(replych, method, args...)
+}
+
+func (a *sequent) newMethodRequest(
+	replych chan reply,
+	method reflect.Value,
+	args ...interface{},
+) (*request, error) {
 	arg_values, err := processMethodArguments(method, a.val, args...)
 	if err != nil {
 		return nil, err
@@ -103,13 +123,7 @@ func (a *sequent) Id() uintptr {
 	return reflect.ValueOf(a.val).Pointer()
 }
 
-func (a *sequent) Call(name string, args ...interface{}) ([]interface{}, error) {
-	replych := make(chan reply)
-	req, err := a.newRequest(replych, name, args...)
-	if err != nil {
-		return nil, err
-	}
-
+func (a *sequent) callRequest(replych chan reply, req *request) ([]interface{}, error) {
 	if !a.Running() {
 		return nil, ErrSequentStop
 	}
@@ -122,6 +136,27 @@ func (a *sequent) Call(name string, args ...interface{}) ([]interface{}, error) 
 	}
 
 	return processMethodReturns(reply.returns), nil
+}
+
+func (a *sequent) CallFunc(
+	fn interface{},
+	args ...interface{},
+) ([]interface{}, error) {
+	replych := make(chan reply)
+	req, err := a.newFuncRequest(replych, fn, args...)
+	if err != nil {
+		return nil, err
+	}
+	return a.callRequest(replych, req)
+}
+
+func (a *sequent) Call(name string, args ...interface{}) ([]interface{}, error) {
+	replych := make(chan reply)
+	req, err := a.newRequest(replych, name, args...)
+	if err != nil {
+		return nil, err
+	}
+	return a.callRequest(replych, req)
 }
 
 func (a *sequent) Cast(name string, args ...interface{}) error {
@@ -222,18 +257,29 @@ func getMethods(receiver interface{}) map[string]interface{} {
 	return out
 }
 
+func convertMethod(
+	receiver interface{},
+	method interface{},
+) (reflect.Value, error) {
+	value := reflect.ValueOf(method)
+	if value.Kind() != reflect.Func {
+		return reflect.Zero(nil), errors.New("method is not a function")
+	}
+	ty := value.Type()
+	if ty.NumIn() < 1 {
+		return reflect.Zero(nil), errors.New("method must have at least one argument")
+	}
+	if !reflect.TypeOf(receiver).AssignableTo(ty.In(0)) {
+		return reflect.Zero(nil), errors.New("method's first argument does not match the receiver type")
+	}
+	return value, nil
+}
+
 func convertMethods(receiver interface{}, methods map[string]interface{}) map[string]reflect.Value {
 	out := make(map[string]reflect.Value)
 	for name, method := range methods {
-		value := reflect.ValueOf(method)
-		if value.Kind() != reflect.Func {
-			continue
-		}
-		ty := value.Type()
-		if ty.NumIn() < 1 {
-			continue
-		}
-		if !reflect.TypeOf(receiver).AssignableTo(ty.In(0)) {
+		value, err := convertMethod(receiver, method)
+		if err != nil {
 			continue
 		}
 		out[name] = value
