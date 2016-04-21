@@ -69,7 +69,7 @@ func (s *mgrState) RemoveMatchSignal(conn *dbus.Conn, iface, member string) {
 }
 
 func NewBusManager(
-	busfn func() (*dbus.Conn, error),
+	busfn func(dbus.Handler, dbus.SignalHandler) (*dbus.Conn, error),
 	name string,
 ) (*BusManager, error) {
 	state := &mgrState{sigref: make(map[string]uint64)}
@@ -78,12 +78,10 @@ func NewBusManager(
 		state:  seriatim.NewSupervisedSequent(state, nil),
 	}
 	handler.bus = handler
-	conn, err := busfn()
+	conn, err := busfn(handler, handler)
 	if err != nil {
 		return nil, err
 	}
-	conn.RegisterHandler(handler)
-	conn.RegisterSignalHandler(handler)
 	err = conn.Auth(nil)
 	if err != nil {
 		conn.Close()
@@ -104,11 +102,11 @@ func NewBusManager(
 }
 
 func NewSessionBusManager(name string) (*BusManager, error) {
-	return NewBusManager(dbus.SessionBusPrivate, name)
+	return NewBusManager(dbus.SessionBusPrivateHandler, name)
 }
 
 func NewSystemBusManager(name string) (*BusManager, error) {
-	return NewBusManager(dbus.SystemBusPrivate, name)
+	return NewBusManager(dbus.SystemBusPrivateHandler, name)
 }
 
 func (mgr *BusManager) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {

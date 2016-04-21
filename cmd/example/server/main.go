@@ -17,11 +17,11 @@ func init() {
 
 type Foo interface {
 	Foo() string
-	Baz() string
+	Baz(int32) string
 }
 
 type Bar interface {
-	Bar() string
+	Bar() (string, error)
 }
 
 type Quux interface {
@@ -43,12 +43,12 @@ func (o *anObject) Foo() string {
 	return fmt.Sprintf("foo %d", o.count)
 }
 
-func (_ *anObject) Baz() string {
-	return "baz"
+func (_ *anObject) Baz(i int32) string {
+	return fmt.Sprint("baz", i)
 }
 
-func (_ *anObject) Bar() string {
-	return "bar"
+func (_ *anObject) Bar() (string, error) {
+	return "bar", fmt.Errorf("Bad! bar")
 }
 
 func handle_error(err error) {
@@ -82,7 +82,7 @@ func main() {
 	err = obj.Implements("net.jsouthworth.Quux", (*Quux)(nil))
 	handle_error(err)
 
-	obj.Receives("signals.Sigs", (*Signal)(nil))
+	obj.Receives("signals.Sigs", (*Signal)(nil), nil)
 	obj = supervisor.NewObject("/foo/quux/bar", &anObject{})
 
 	err = obj.Implements("net.jsouthworth.Bar", (*Bar)(nil))
