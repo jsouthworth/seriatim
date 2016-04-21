@@ -640,6 +640,13 @@ func (o *Object) Call(
 	return m.Call(args...)
 }
 
+func (o *Object) CallFunc(
+	fn interface{},
+	args ...interface{},
+) ([]interface{}, error) {
+	return o.sequent.CallFunc(fn, args...)
+}
+
 func (o *Object) Introspect() *introspect.Node {
 	getChildren := func() []introspect.Node {
 		children := o.getObjects()
@@ -698,6 +705,12 @@ func (intro intro_fn) Call(
 	args ...interface{},
 ) ([]interface{}, error) {
 	return []interface{}{intro()}, nil
+}
+func (intro intro_fn) CallFunc(
+	fn interface{},
+	args ...interface{},
+) ([]interface{}, error) {
+	return nil, dbus.ErrMsgUnknownMethod
 }
 func (intro intro_fn) Cast(name string, args ...interface{}) error {
 	go intro.Call(name, args)

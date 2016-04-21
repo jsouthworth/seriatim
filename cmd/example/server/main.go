@@ -88,5 +88,9 @@ func main() {
 	err = obj.Implements("net.jsouthworth.Bar", (*Bar)(nil))
 	handle_error(err)
 
+	fmt.Println(obj.CallFunc(func(o *anObject, i int) string {
+		return fmt.Sprint(o.Foo(), i)
+	}, 1))
+
 	select {}
 }
