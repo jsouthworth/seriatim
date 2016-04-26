@@ -47,22 +47,28 @@ type mgrState struct {
 	sigref map[string]uint64
 }
 
+func mkSignalKey(iface, member string) string {
+	return iface + "." + member
+}
+
 func (s *mgrState) AddMatchSignal(conn *dbus.Conn, iface, member string) {
 	// Only register for signal if not already registered
-	if s.sigref[iface+"."+member] == 0 {
+	key := mkSignalKey(iface, member)
+	if s.sigref[key] == 0 {
 		conn.BusObject().Call(fdtAddMatch, 0,
 			"type='signal',interface='"+iface+"',member='"+member+"'")
 	}
-	s.sigref[iface+"."+member]++
+	s.sigref[key]++
 }
 
 func (s *mgrState) RemoveMatchSignal(conn *dbus.Conn, iface, member string) {
 	// Only deregister if this is the last request
-	if s.sigref[iface+":"+member] == 0 {
+	key := mkSignalKey(iface, member)
+	if s.sigref[key] == 0 {
 		return
 	}
-	s.sigref[iface+":"+member]--
-	if s.sigref[iface+"."+member] == 0 {
+	s.sigref[key]--
+	if s.sigref[key] == 0 {
 		conn.BusObject().Call(fdtRemoveMatch, 0,
 			"type='signal',interface='"+iface+"',member='"+member+"'")
 	}
