@@ -265,14 +265,16 @@ type Object struct {
 	emitterm   multiWriterValue
 	objects    multiWriterValue
 	bus        *BusManager
+	parent     *Object
 }
 
-func NewObject(name string, value interface{}, s seriatim.Supervisor, bus *BusManager) *Object {
+func NewObject(name string, value interface{}, parent *Object, bus *BusManager) *Object {
 	obj := &Object{
 		name:    name,
 		value:   reflect.ValueOf(value),
-		sequent: seriatim.NewSupervisedSequent(value, s),
+		sequent: seriatim.NewSupervisedSequent(value, parent),
 		bus:     bus,
+		parent:  parent,
 	}
 	obj.interfaces.Store(make(map[string]*Interface))
 	obj.listeners.Store(make(map[string]*Interface))
@@ -282,18 +284,40 @@ func NewObject(name string, value interface{}, s seriatim.Supervisor, bus *BusMa
 	return obj
 }
 
+func (o *Object) removeListeners() {
+	o.listeners.Update(func(value *atomic.Value) {
+		for dbusIfaceName, intf := range value.Load().(map[string]*Interface) {
+			for sigName, _ := range intf.signals {
+				o.bus.state.Call("RemoveMatchSignal", o.bus.conn,
+					dbusIfaceName, sigName)
+			}
+		}
+		value.Store(make(map[string]*Interface))
+	})
+}
+
 func (o *Object) SequentTerminated(reason error, id uintptr) {
 	o.objects.Update(func(value *atomic.Value) {
 		objects := make(map[string]*Object)
 		for name, obj := range value.Load().(map[string]*Object) {
-			if obj.sequent.Id() == id {
-				//TODO: preserve children
-				continue
+			if obj.hasActions() && obj.sequent.Id() == id {
+				obj.removeListeners()
+				// if there are children replace with placeholder
+				if obj.hasChildren() {
+					object := NewObject(name, nil, o, o.bus)
+					object.objects = obj.objects
+					obj = object
+				} else {
+					continue
+				}
 			}
 			objects[name] = obj
 		}
 		value.Store(objects)
 	})
+	if !o.hasActions() && o.parent != nil {
+		o.parent.rmChildObject(o.name)
+	}
 }
 
 func (o *Object) getObjects() map[string]*Object {
@@ -302,6 +326,10 @@ func (o *Object) getObjects() map[string]*Object {
 
 func (o *Object) getInterfaces() map[string]*Interface {
 	return o.interfaces.Load().(map[string]*Interface)
+}
+
+func (o *Object) getListeners() map[string]*Interface {
+	return o.listeners.Load().(map[string]*Interface)
 }
 
 func (o *Object) newObject(path []string, val interface{}) *Object {
@@ -315,7 +343,7 @@ func (o *Object) newObject(path []string, val interface{}) *Object {
 		obj, ok := o.LookupObject(name)
 		if !ok {
 			//placeholder object for introspection
-			obj = NewObject(name, nil, nil, o.bus)
+			obj = NewObject(name, nil, o, o.bus)
 			o.addObject(name, obj)
 		}
 		return obj.newObject(path[1:], val)
@@ -333,8 +361,16 @@ func (o *Object) NewObject(path dbus.ObjectPath, val interface{}) *Object {
 	return o.newObject(ps, val)
 }
 
+func (o *Object) hasActions() bool {
+	return o.sequent != nil
+}
+
+func (o *Object) hasChildren() bool {
+	return len(o.getObjects()) > 0
+}
+
 func (o *Object) terminate() {
-	if o.sequent != nil {
+	if o.hasActions() {
 		o.sequent.Terminate(nil)
 	}
 }
@@ -346,18 +382,23 @@ func (o *Object) rmChildObject(name string) {
 			objects[child] = obj
 		}
 		if obj, ok := objects[name]; ok {
-			// if there are children replace with placeholder
-			if len(obj.getObjects()) > 0 {
-				object := NewObject(name, nil, nil, o.bus)
-				object.objects = obj.objects
-				objects[name] = object
-			} else {
-				delete(objects, name)
-			}
 			obj.terminate()
+			if !obj.hasActions() {
+				// if there are children replace with placeholder
+				if obj.hasChildren() {
+					object := NewObject(name, nil, o, o.bus)
+					object.objects = obj.objects
+					obj = object
+				} else {
+					delete(objects, name)
+				}
+			}
 		}
 		value.Store(objects)
 	})
+	if !o.hasActions() && o.parent != nil {
+		o.parent.rmChildObject(o.name)
+	}
 }
 
 func (o *Object) delObject(path []string) {
@@ -604,7 +645,7 @@ func (o *Object) Receives(
 
 // Deliver the signal to this object's listeners and all child objects
 func (o *Object) DeliverSignal(iface, member string, signal *dbus.Signal) {
-	listeners := o.listeners.Load().(map[string]*Interface)
+	listeners := o.getListeners()
 	for sigiface, intf := range listeners {
 		if iface != sigiface {
 			continue
@@ -617,7 +658,7 @@ func (o *Object) DeliverSignal(iface, member string, signal *dbus.Signal) {
 		}
 	}
 
-	objects := o.objects.Load().(map[string]*Object)
+	objects := o.getObjects()
 	for _, obj := range objects {
 		obj.DeliverSignal(iface, member, signal)
 	}
