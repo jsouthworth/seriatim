@@ -9,10 +9,12 @@ type Queue struct {
 }
 
 func NewQueue(limit int) *Queue {
-	q := &Queue{
+	if limit < 1 {
+		return nil
+	}
+	return &Queue{
 		queue: make(chan Message, limit),
 	}
-	return q
 }
 
 func (q *Queue) Dequeue() <-chan Message {
@@ -21,6 +23,14 @@ func (q *Queue) Dequeue() <-chan Message {
 
 func (q *Queue) Enqueue() chan<- Message {
 	return q.queue
+}
+
+func (q *Queue) Len() int {
+	return len(q.queue)
+}
+
+func (q *Queue) Cap() int {
+	return cap(q.queue)
 }
 
 func (q *Queue) Stop() {
