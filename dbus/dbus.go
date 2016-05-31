@@ -74,9 +74,8 @@ func (s *mgrState) RemoveMatchSignal(conn *dbus.Conn, iface, member string) {
 	}
 }
 
-func NewBusManager(
+func NewAnonymousBusManager(
 	busfn func(dbus.Handler, dbus.SignalHandler) (*dbus.Conn, error),
-	name string,
 ) (*BusManager, error) {
 	state := &mgrState{sigref: make(map[string]uint64)}
 	handler := &BusManager{
@@ -98,12 +97,26 @@ func NewBusManager(
 		conn.Close()
 		return nil, err
 	}
-	_, err = conn.RequestName(name, 0)
+	handler.conn = conn
+	return handler, nil
+}
+
+func NewBusManager(
+	busfn func(dbus.Handler, dbus.SignalHandler) (*dbus.Conn, error),
+	name string,
+) (*BusManager, error) {
+
+	handler, err := NewAnonymousBusManager(busfn)
 	if err != nil {
-		conn.Close()
 		return nil, err
 	}
-	handler.conn = conn
+
+	err = handler.RequestName(name)
+	if err != nil {
+		handler.conn.Close()
+		return nil, err
+	}
+
 	return handler, nil
 }
 
@@ -111,8 +124,24 @@ func NewSessionBusManager(name string) (*BusManager, error) {
 	return NewBusManager(dbus.SessionBusPrivateHandler, name)
 }
 
+func NewAnonymousSessionBusManager() (*BusManager, error) {
+	return NewAnonymousBusManager(dbus.SessionBusPrivateHandler)
+}
+
 func NewSystemBusManager(name string) (*BusManager, error) {
 	return NewBusManager(dbus.SystemBusPrivateHandler, name)
+}
+
+func NewAnonymousSystemBusManager() (*BusManager, error) {
+	return NewAnonymousBusManager(dbus.SystemBusPrivateHandler)
+}
+
+func (mgr *BusManager) RequestName(name string) error {
+	_, err := mgr.conn.RequestName(name, 0)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (mgr *BusManager) LookupObject(path dbus.ObjectPath) (dbus.ServerObject, bool) {
