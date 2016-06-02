@@ -11,7 +11,6 @@ import (
 
 var (
 	ErrSequentStop   = errors.New("Sequent stopped")
-	ErrSequentDied   = errors.New("Sequent died")
 	ErrUnknownMethod = errors.New("Unknown method")
 )
 
@@ -66,7 +65,9 @@ type request struct {
 }
 
 func (msg *request) Purged() {
-	close(msg.reply)
+	if msg.reply != nil {
+		close(msg.reply)
+	}
 }
 
 type sequent struct {
@@ -118,7 +119,8 @@ func (a *sequent) Call(name string, args ...interface{}) ([]interface{}, error) 
 
 	reply, ok := <-replych
 	if !ok {
-		return nil, ErrSequentDied
+		// sequent terminated and channel closed
+		return nil, ErrSequentStop
 	}
 
 	return processMethodReturns(reply.returns), nil
