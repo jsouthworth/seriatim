@@ -65,7 +65,9 @@ type request struct {
 }
 
 func (msg *request) Purged() {
-	close(msg.reply)
+	if msg.reply != nil {
+		close(msg.reply)
+	}
 }
 
 type sequent struct {
