@@ -611,36 +611,47 @@ func (o *Object) getSignals(
 	return signals
 }
 
-func (o *Object) Implements(name string, iface_ptr interface{}) error {
-	return o.ImplementsMap(name, iface_ptr,
+func (o *Object) Implements(name string, obj interface{}) error {
+	return o.ImplementsMap(name, obj,
 		func(in string) string {
 			return in
 		})
 }
 
+// Resolve obj type and whether obj is a ptr to an interface
+func resolveType(obj interface{}) (reflect.Type, bool) {
+	obj_typ := reflect.TypeOf(obj)
+	if obj_typ.Kind() == reflect.Ptr {
+		typ := obj_typ.Elem()
+		if typ.Kind() == reflect.Interface {
+			return typ, true
+		}
+	}
+	return obj_typ, false
+}
+
 func (o *Object) ImplementsMap(
 	name string,
-	iface_ptr interface{},
+	obj interface{},
 	mapfn func(string) string,
 ) error {
-	ptr_typ := reflect.TypeOf(iface_ptr)
-	if ptr_typ.Kind() != reflect.Ptr {
-		return errors.New("must be pointer to interface")
-	}
+	vtype := o.value.Type()
+	obj_type, is_ifaceptr := resolveType(obj)
+	if is_ifaceptr {
+		if !vtype.Implements(obj_type) {
+			return fmt.Errorf("%s does not implement %s",
+				vtype, obj_type)
+		}
 
-	iface := ptr_typ.Elem()
-	if iface.Kind() != reflect.Interface {
-		return errors.New("must be pointer to interface")
-	}
-
-	value := o.value
-	if !value.Type().Implements(iface) {
-		return errors.New(
-			fmt.Sprintf("%s does not implement %s", value.Type(), iface))
+	} else {
+		if obj_type != vtype {
+			return fmt.Errorf("%s is not type identical to %s",
+				vtype, obj_type)
+		}
 	}
 
 	intf := &Interface{
-		methods: o.getMethods(iface, value, mapfn),
+		methods: o.getMethods(obj_type, o.value, mapfn),
 		object:  o,
 	}
 
