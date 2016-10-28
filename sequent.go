@@ -27,7 +27,7 @@ type Sequent interface {
 }
 
 func NewSequent(val interface{}) Sequent {
-	return NewSupervisedSequentTable(val, getMethods(val), nil)
+	return NewSupervisedSequentTable(val, GetMethods(val), nil)
 }
 
 func NewSequentTable(val interface{}, methods map[string]interface{}) Sequent {
@@ -35,7 +35,7 @@ func NewSequentTable(val interface{}, methods map[string]interface{}) Sequent {
 }
 
 func NewSupervisedSequent(val interface{}, supervisor Supervisor) Sequent {
-	return NewSupervisedSequentTable(val, getMethods(val), supervisor)
+	return NewSupervisedSequentTable(val, GetMethods(val), supervisor)
 }
 
 func NewSupervisedSequentTable(
@@ -208,7 +208,7 @@ loop:
 	}
 }
 
-func getMethods(receiver interface{}) map[string]interface{} {
+func GetMethods(receiver interface{}) map[string]interface{} {
 	if receiver == nil {
 		return nil
 	}

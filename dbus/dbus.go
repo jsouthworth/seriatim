@@ -292,24 +292,51 @@ func (intf *Interface) LookupMethod(name string) (dbus.Method, bool) {
 }
 
 type Object struct {
-	name       string
-	value      reflect.Value
-	sequent    seriatim.Sequent
-	interfaces multiWriterValue
-	listeners  multiWriterValue
-	emitterm   multiWriterValue
-	objects    multiWriterValue
-	bus        *BusManager
-	parent     *Object
+	name        string
+	methodTable map[string]interface{}
+	sequent     seriatim.Sequent
+	interfaces  multiWriterValue
+	listeners   multiWriterValue
+	emitterm    multiWriterValue
+	objects     multiWriterValue
+	bus         *BusManager
+	parent      *Object
 }
 
-func NewObject(name string, value interface{}, parent *Object, bus *BusManager) *Object {
+func NewObject(
+	name string,
+	value interface{},
+	parent *Object,
+	bus *BusManager,
+) *Object {
+	return NewObjectFromTable(name, seriatim.GetMethods(value), parent, bus)
+}
+
+func filterTable(table map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	for k, v := range table {
+		if reflect.ValueOf(v).Kind() != reflect.Func {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func NewObjectFromTable(
+	name string,
+	table map[string]interface{},
+	parent *Object,
+	bus *BusManager,
+) *Object {
+	table = filterTable(table)
 	obj := &Object{
-		name:    name,
-		value:   reflect.ValueOf(value),
-		sequent: seriatim.NewSupervisedSequent(value, parent),
-		bus:     bus,
-		parent:  parent,
+		name:   name,
+		bus:    bus,
+		parent: parent,
+		sequent: seriatim.NewSupervisedSequentTable(struct{}{},
+			table, parent),
+		methodTable: table,
 	}
 	obj.interfaces.Store(make(map[string]*Interface))
 	obj.listeners.Store(make(map[string]*Interface))
@@ -317,6 +344,35 @@ func NewObject(name string, value interface{}, parent *Object, bus *BusManager) 
 	obj.emitterm.Store(make([]chan<- struct{}, 0))
 	obj.addInterface(fdtIntrospectable, newIntrospection(obj))
 	return obj
+}
+
+func (o *Object) implements(iface map[string]reflect.Type) bool {
+	if len(iface) > len(o.methodTable) {
+		return false
+	}
+	for method_name, iface_method_type := range iface {
+		if _, ok := o.methodTable[method_name]; !ok {
+			return false
+		}
+		method_type := reflect.TypeOf(o.methodTable[method_name])
+		if iface_method_type.NumIn() != method_type.NumIn() {
+			return false
+		}
+		if iface_method_type.NumOut() != method_type.NumOut() {
+			return false
+		}
+		for j := 0; j < iface_method_type.NumIn(); j++ {
+			if iface_method_type.In(j) != method_type.In(j) {
+				return false
+			}
+		}
+		for j := 0; j < iface_method_type.NumOut(); j++ {
+			if iface_method_type.Out(j) != method_type.Out(j) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (o *Object) removeListeners() {
@@ -367,11 +423,11 @@ func (o *Object) getListeners() map[string]*Interface {
 	return o.listeners.Load().(map[string]*Interface)
 }
 
-func (o *Object) newObject(path []string, val interface{}) *Object {
+func (o *Object) newObject(path []string, table map[string]interface{}) *Object {
 	name := path[0]
 	switch len(path) {
 	case 1:
-		obj := NewObject(name, val, o, o.bus)
+		obj := NewObjectFromTable(name, table, o, o.bus)
 		o.addObject(name, obj)
 		return obj
 	default:
@@ -381,7 +437,7 @@ func (o *Object) newObject(path []string, val interface{}) *Object {
 			obj = NewObject(name, nil, o, o.bus)
 			o.addObject(name, obj)
 		}
-		return obj.newObject(path[1:], val)
+		return obj.newObject(path[1:], table)
 	}
 }
 
@@ -393,7 +449,21 @@ func (o *Object) NewObject(path dbus.ObjectPath, val interface{}) *Object {
 	if ps[0] == "" {
 		ps = ps[1:]
 	}
-	return o.newObject(ps, val)
+	return o.newObject(ps, seriatim.GetMethods(val))
+}
+
+func (o *Object) NewObjectFromTable(
+	path dbus.ObjectPath,
+	table map[string]interface{},
+) *Object {
+	if string(path) == "/" {
+		return o
+	}
+	ps := strings.Split(string(path), "/")
+	if ps[0] == "" {
+		ps = ps[1:]
+	}
+	return o.newObject(ps, table)
 }
 
 func (o *Object) hasActions() bool {
@@ -526,51 +596,16 @@ func (o *Object) addObject(name string, object *Object) {
 }
 
 func (o *Object) getMethods(
-	iface reflect.Type,
-	value reflect.Value,
+	iface map[string]reflect.Type,
 	mapfn func(string) string,
 ) map[string]*Method {
-	get_arguments := func(
-		num func() int,
-		get func(int) reflect.Type,
-		typ string,
-	) []introspect.Arg {
-		var args []introspect.Arg
-		for j := 0; j < num(); j++ {
-			arg := get(j)
-			if typ == "out" && j == num()-1 {
-				if arg.Implements(errtype) {
-					continue
-				}
-			}
-			if typ == "in" && arg == sendertype {
-				// Hide argument from introspection
-				continue
-			}
-			iarg := introspect.Arg{
-				"",
-				dbus.SignatureOfType(arg).String(),
-				typ,
-			}
-			args = append(args, iarg)
-		}
-		return args
-	}
-
 	methods := make(map[string]*Method)
-	for i := 0; i < iface.NumMethod(); i++ {
-		if iface.Method(i).PkgPath != "" {
-			//skip non exported methods
-			continue
-		}
-
-		method_name := iface.Method(i).Name
-		method_type := value.MethodByName(method_name).Type()
+	for method_name, method_type := range iface {
 		mapped_name := mapfn(method_name)
 		method := &Method{
 			sequent: o.sequent,
 			name:    method_name,
-			value:   value.MethodByName(method_name),
+			value:   reflect.ValueOf(o.methodTable[method_name]),
 			introspection: introspect.Method{
 				Name: mapped_name,
 				Args: make([]introspect.Arg, 0,
@@ -579,9 +614,9 @@ func (o *Object) getMethods(
 			},
 		}
 		method.introspection.Args = append(method.introspection.Args,
-			get_arguments(method_type.NumIn, method_type.In, "in")...)
+			getIntrospectionArguments(method_type.NumIn, method_type.In, "in")...)
 		method.introspection.Args = append(method.introspection.Args,
-			get_arguments(method_type.NumOut, method_type.Out, "out")...)
+			getIntrospectionArguments(method_type.NumOut, method_type.Out, "out")...)
 
 		methods[mapped_name] = method
 	}
@@ -618,6 +653,49 @@ func (o *Object) Implements(name string, obj interface{}) error {
 		})
 }
 
+func (o *Object) ImplementsMap(
+	name string,
+	obj interface{},
+	mapfn func(string) string,
+) error {
+	return o.implementsTypes(name, getMethodTypes(obj), mapfn)
+}
+
+func (o *Object) ImplementsTable(
+	name string,
+	table map[string]interface{},
+) error {
+	return o.ImplementsTableMap(name, table,
+		func(in string) string {
+			return in
+		})
+}
+
+func (o *Object) ImplementsTableMap(
+	name string,
+	table map[string]interface{},
+	mapfn func(string) string,
+) error {
+	return o.implementsTypes(name, methodTableToTypes(table), mapfn)
+
+}
+func (o *Object) implementsTypes(
+	name string,
+	types map[string]reflect.Type,
+	mapfn func(string) string,
+) error {
+	if !o.implements(types) {
+		return fmt.Errorf("Object does not implement interface")
+	}
+	intf := &Interface{
+		methods: o.getMethods(types, mapfn),
+		object:  o,
+	}
+
+	o.addInterface(name, intf)
+	return nil
+}
+
 // Resolve obj type and whether obj is a ptr to an interface
 func resolveType(obj interface{}) (reflect.Type, bool) {
 	obj_typ := reflect.TypeOf(obj)
@@ -628,35 +706,6 @@ func resolveType(obj interface{}) (reflect.Type, bool) {
 		}
 	}
 	return obj_typ, false
-}
-
-func (o *Object) ImplementsMap(
-	name string,
-	obj interface{},
-	mapfn func(string) string,
-) error {
-	vtype := o.value.Type()
-	obj_type, is_ifaceptr := resolveType(obj)
-	if is_ifaceptr {
-		if !vtype.Implements(obj_type) {
-			return fmt.Errorf("%s does not implement %s",
-				vtype, obj_type)
-		}
-
-	} else {
-		if obj_type != vtype {
-			return fmt.Errorf("%s is not type identical to %s",
-				vtype, obj_type)
-		}
-	}
-
-	intf := &Interface{
-		methods: o.getMethods(obj_type, o.value, mapfn),
-		object:  o,
-	}
-
-	o.addInterface(name, intf)
-	return nil
 }
 
 // Call for each D-Bus interface to receive signals from
@@ -675,10 +724,9 @@ func (o *Object) Receives(
 		return errors.New("must be pointer to interface")
 	}
 
-	value := o.value
-	if !value.Type().Implements(iface) {
+	if !o.implements(getMethodTypes(iface)) {
 		return errors.New(
-			fmt.Sprintf("%s does not implement %s", value.Type(), iface))
+			fmt.Sprintf("Object does not implement %s", iface))
 	}
 
 	intf := &Interface{
@@ -755,7 +803,7 @@ func (o *Object) Introspect() *introspect.Node {
 	// 	return out
 	// }
 	getInterfaces := func() []introspect.Interface {
-		if o.value.Kind() == reflect.Invalid {
+		if o.sequent == nil {
 			return nil
 		}
 		ifaces := o.getInterfaces()
@@ -834,4 +882,67 @@ func introspectNode(n *introspect.Node) (string, error) {
 	}
 	declaration := strings.TrimSpace(introspect.IntrospectDeclarationString)
 	return declaration + string(b), nil
+}
+
+func getIntrospectionArguments(
+	num func() int,
+	get func(int) reflect.Type,
+	typ string,
+) []introspect.Arg {
+	var args []introspect.Arg
+	for j := 0; j < num(); j++ {
+		arg := get(j)
+		if typ == "out" && j == num()-1 {
+			if arg.Implements(errtype) {
+				continue
+			}
+		}
+		if typ == "in" && arg == sendertype {
+			// Hide argument from introspection
+			continue
+		}
+		iarg := introspect.Arg{
+			"",
+			dbus.SignatureOfType(arg).String(),
+			typ,
+		}
+		args = append(args, iarg)
+	}
+	return args
+}
+
+func methodTableToTypes(table map[string]interface{}) map[string]reflect.Type {
+	types := make(map[string]reflect.Type)
+	for name, method := range table {
+		if reflect.ValueOf(method).Kind() != reflect.Func {
+			continue
+		}
+		types[name] = reflect.TypeOf(method)
+	}
+	return types
+}
+
+func getMethodTypes(object interface{}) map[string]reflect.Type {
+	obj_type, is_iface := resolveType(object)
+	out := make(map[string]reflect.Type)
+	if is_iface {
+		for i := 0; i < obj_type.NumMethod(); i++ {
+			methodType := obj_type.Method(i)
+			if methodType.PkgPath != "" {
+				continue //skip private methods
+			}
+			out[methodType.Name] = methodType.Type
+		}
+		return out
+	}
+	obj := reflect.ValueOf(object)
+	for i := 0; i < obj_type.NumMethod(); i++ {
+		method := obj.Method(i)
+		methodType := obj_type.Method(i)
+		if methodType.PkgPath != "" {
+			continue //skip private methods
+		}
+		out[methodType.Name] = method.Type()
+	}
+	return out
 }
