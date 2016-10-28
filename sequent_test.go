@@ -160,7 +160,7 @@ var genCallCommand = gen.Const(&commands.ProtoCommand{
 var genCallMissingParamCommand = gen.Const(&commands.ProtoCommand{
 	Name: "CallMissingParam",
 	RunFunc: func(sut commands.SystemUnderTest) commands.Result {
-		exp := errors.New("Not enough arguments need 2, have 1")
+		exp := errors.New("Not enough arguments need 1, have 0")
 		_, err := sut.(*sutSequent).Call("Public")
 		return reflect.DeepEqual(exp, err)
 	},
@@ -255,7 +255,7 @@ var genCastCommand = gen.Const(&commands.ProtoCommand{
 var genCastMissingParamCommand = gen.Const(&commands.ProtoCommand{
 	Name: "CastMissingParam",
 	RunFunc: func(sut commands.SystemUnderTest) commands.Result {
-		exp := errors.New("Not enough arguments need 2, have 1")
+		exp := errors.New("Not enough arguments need 1, have 0")
 		err := sut.(*sutSequent).Cast("Broadcast")
 		return reflect.DeepEqual(exp, err)
 	},
@@ -383,18 +383,10 @@ func TestSequentTable(t *testing.T) {
 	)
 	// table contrived to hit all the conditions in convertMethods
 	methods := map[string]interface{}{
-		notFunction:   notFunction,
-		noParameter:   func() {},
-		notAssignable: func(bool) {},
+		notFunction: notFunction,
 	}
 	s := NewSequentTable(&value{}, methods)
 	if _, err := s.Call(notFunction); !reflect.DeepEqual(err, ErrUnknownMethod) {
 		t.Error("Incorrectly able to call invalid function")
-	}
-	if _, err := s.Call(noParameter); !reflect.DeepEqual(err, ErrUnknownMethod) {
-		t.Error("Incorrectly able to call function without param")
-	}
-	if _, err := s.Call(notAssignable); !reflect.DeepEqual(err, ErrUnknownMethod) {
-		t.Error("Incorrectly able to call unassignable type")
 	}
 }

@@ -89,7 +89,7 @@ func (a *sequent) newRequest(
 		return nil, ErrUnknownMethod
 	}
 
-	arg_values, err := processMethodArguments(method, a.val, args...)
+	arg_values, err := processMethodArguments(method, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func (a *sequent) Terminate(reason error) {
 }
 
 func (a *sequent) init(methods map[string]interface{}) {
-	a.methods = convertMethods(a.val, methods)
+	a.methods = convertMethods(methods)
 	a.queue = NewQueue(1)
 	a.running.Store(true)
 	a.kill = make(chan error)
@@ -213,29 +213,24 @@ func getMethods(receiver interface{}) map[string]interface{} {
 		return nil
 	}
 	out := make(map[string]interface{})
-	ty := reflect.TypeOf(receiver)
-	for i := 0; i < ty.NumMethod(); i++ {
-		if ty.Method(i).PkgPath != "" {
+	rval := reflect.ValueOf(receiver)
+	recvType := reflect.TypeOf(receiver)
+	for i := 0; i < rval.NumMethod(); i++ {
+		method := rval.Method(i)
+		methodType := recvType.Method(i)
+		if methodType.PkgPath != "" {
 			continue //skip private methods
 		}
-		method := ty.Method(i)
-		out[method.Name] = method.Func.Interface()
+		out[methodType.Name] = method.Interface()
 	}
 	return out
 }
 
-func convertMethods(receiver interface{}, methods map[string]interface{}) map[string]reflect.Value {
+func convertMethods(methods map[string]interface{}) map[string]reflect.Value {
 	out := make(map[string]reflect.Value)
 	for name, method := range methods {
 		value := reflect.ValueOf(method)
 		if value.Kind() != reflect.Func {
-			continue
-		}
-		ty := value.Type()
-		if ty.NumIn() < 1 {
-			continue
-		}
-		if !reflect.TypeOf(receiver).AssignableTo(ty.In(0)) {
 			continue
 		}
 		out[name] = value
@@ -243,18 +238,17 @@ func convertMethods(receiver interface{}, methods map[string]interface{}) map[st
 	return out
 }
 
-func processMethodArguments(method reflect.Value, receiver interface{}, args ...interface{}) ([]reflect.Value, error) {
+func processMethodArguments(method reflect.Value, args ...interface{}) ([]reflect.Value, error) {
 	method_type := method.Type()
-	if len(args)+1 != method_type.NumIn() {
+	if len(args) != method_type.NumIn() {
 		return nil, fmt.Errorf("Not enough arguments need %d, have %d",
 			method_type.NumIn(),
-			len(args)+1)
+			len(args))
 	}
 	out := make([]reflect.Value, 0, method_type.NumIn())
-	out = append(out, reflect.ValueOf(receiver))
 	for i := 0; i < len(args); i++ {
 		arg := reflect.ValueOf(args[i])
-		param := method_type.In(i + 1)
+		param := method_type.In(i)
 		arg_type := reflect.TypeOf(args[i])
 		if arg_type.ConvertibleTo(param) {
 			arg = arg.Convert(param)
