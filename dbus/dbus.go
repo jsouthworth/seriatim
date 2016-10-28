@@ -230,7 +230,7 @@ func (method *Method) Call(args ...interface{}) ([]interface{}, error) {
 		return nil, err
 	}
 	last := method_type.NumOut() - 1
-	if method_type.Out(last) == errtype {
+	if method_type.Out(last).Implements(errtype) {
 		// Last parameter is of type error
 		if ret[last] != nil {
 			return ret[:last], ret[last].(error)
